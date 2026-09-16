@@ -13,8 +13,10 @@ use App\Models\Service;
 use App\Models\User;
 use App\Models\Wallet;
 use App\Models\WalletTransaction;
+use App\Services\SMSService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class AppointmentController extends Controller
 {
@@ -30,12 +32,24 @@ class AppointmentController extends Controller
             'paid_price' => ['nullable', 'numeric'],
         ]);
 
-        return DB::transaction(function () use ($data) {
+        /*
+         * این متغیر فقط زمانی مقدار می‌گیرد که
+         * مشتری برای اولین بار ساخته شده باشد.
+         */
+        $newCustomerSms = null;
 
-            $user = User::where('phone', $data['phone_number'])->first();
+        $appointmentData = DB::transaction(function () use ($data, &$newCustomerSms) {
+
+            $user = User::where(
+                'phone',
+                $data['phone_number']
+            )->first();
 
             if (!$user) {
 
+                /*
+                 * ساخت رمز تصادفی برای مشتری جدید
+                 */
                 $password = bin2hex(random_bytes(5));
 
                 $customerUser = User::create([
@@ -65,10 +79,21 @@ class AppointmentController extends Controller
                     'end_date' => now()->addDays(30),
                 ]);
 
+                /*
+                 * SMS بعد از Commit شدن تراکنش ارسال می‌شود.
+                 * بنابراین اگر SMS خراب شود، ساخت مشتری rollback نمی‌شود.
+                 */
+                $newCustomerSms = [
+                    'phone' => $data['phone_number'],
+                    'password' => $password,
+                ];
+
             } else {
 
-                $customer = Customer::where('user_id', $user->id)
-                    ->first();
+                $customer = Customer::where(
+                    'user_id',
+                    $user->id
+                )->first();
 
                 if (!$customer) {
 
@@ -111,11 +136,45 @@ class AppointmentController extends Controller
                 ]);
             }
 
-            return $this->appointmentResponse(
-                $appointment->id,
-                'نوبت با موفقیت ایجاد شد'
-            );
+            return [
+                'appointment_id' => $appointment->id,
+            ];
         });
+
+        /*
+         * ارسال SMS رمز عبور مشتری جدید
+         *
+         * این بخش خارج از transaction است تا
+         * خطای SMS باعث rollback دیتابیس نشود.
+         */
+        if ($newCustomerSms) {
+
+            try {
+
+                $message =
+                    "رمز عبور شما: " .
+                    $newCustomerSms['password'];
+
+                $smsService = app(SMSService::class);
+
+                $smsService->send(
+                    $newCustomerSms['phone'],
+                    $message
+                );
+
+            } catch (\Throwable $e) {
+
+                Log::error('New customer password SMS failed', [
+                    'phone' => $newCustomerSms['phone'],
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return $this->appointmentResponse(
+            $appointmentData['appointment_id'],
+            'نوبت با موفقیت ایجاد شد'
+        );
     }
 
     public function index()
@@ -137,7 +196,9 @@ class AppointmentController extends Controller
     {
         $payload = $request->attributes->get('auth_user');
 
-        $user = User::with('role')->find($payload['sub'] ?? null);
+        $user = User::with('role')->find(
+            $payload['sub'] ?? null
+        );
 
         if (!$user || !$user->role) {
             return response()->json([
@@ -185,7 +246,10 @@ class AppointmentController extends Controller
                 ], 404);
             }
 
-            $salon = Salon::where('owner_id', $owner->id)
+            $salon = Salon::where(
+                'owner_id',
+                $owner->id
+            )
                 ->where('IsDeleted', false)
                 ->first();
 
@@ -437,6 +501,11 @@ class AppointmentController extends Controller
 
     public function pay(Request $request)
     {
+
+      Log::info('PAY METHOD REACHED', [
+        'data' => $request->all(),
+    ]);
+
         $data = $request->validate([
             'pay_price' => ['required', 'numeric'],
             'appointment_id' => [
@@ -451,26 +520,32 @@ class AppointmentController extends Controller
             ],
         ]);
 
-        return DB::transaction(function () use ($data) {
+        $paymentData = DB::transaction(function () use ($data) {
 
             $appointment = Appointment::find(
                 $data['appointment_id']
             );
 
             if (!$appointment) {
-                return response()->json([
-                    'data' => null,
-                    'message' => 'Appointment not found',
-                ], 404);
+                return [
+                    'error' => response()->json([
+                        'data' => null,
+                        'message' => 'Appointment not found',
+                    ], 404),
+                ];
             }
 
-            $salon = Salon::find($appointment->salon_id);
+            $salon = Salon::find(
+                $appointment->salon_id
+            );
 
             if (!$salon) {
-                return response()->json([
-                    'data' => null,
-                    'message' => 'سالن پیدا نشد',
-                ], 404);
+                return [
+                    'error' => response()->json([
+                        'data' => null,
+                        'message' => 'سالن پیدا نشد',
+                    ], 404),
+                ];
             }
 
             $wallet = Wallet::where(
@@ -479,14 +554,31 @@ class AppointmentController extends Controller
             )->first();
 
             if (!$wallet) {
-                return response()->json([
-                    'data' => null,
-                    'message' => 'کیف پول یافت نشد',
-                ], 400);
+                return [
+                    'error' => response()->json([
+                        'data' => null,
+                        'message' => 'کیف پول یافت نشد',
+                    ], 400),
+                ];
             }
 
-            $appointment->paid_price = $data['pay_price'];
+            $customer = Customer::with('user')
+                ->find($data['customer_id']);
+
+            if (!$customer || !$customer->user) {
+                return [
+                    'error' => response()->json([
+                        'data' => null,
+                        'message' => 'اطلاعات مشتری یافت نشد',
+                    ], 404),
+                ];
+            }
+
+            $appointment->paid_price =
+                $data['pay_price'];
+
             $appointment->is_paid = true;
+
             $appointment->save();
 
             $cashback = (
@@ -506,11 +598,68 @@ class AppointmentController extends Controller
                 'type' => 'CASHBACK',
             ]);
 
-            return $this->appointmentResponse(
-                $appointment->id,
-                'عملیات با موفقیت انجام شد'
-            );
+            return [
+                'appointment_id' => $appointment->id,
+                'cashback' => $cashback,
+                'phone' => $customer->user->phone,
+            ];
         });
+
+        if (isset($paymentData['error'])) {
+            return $paymentData['error'];
+        }
+
+        /*
+         * ارسال SMS بعد از موفقیت کامل تراکنش پرداخت
+         *
+         * اگر SMS شکست بخورد:
+         * پرداخت و cashback همچنان موفق باقی می‌مانند.
+         */
+        
+        Log::info('PAYMENT SMS: reached SMS section', [
+    'appointment_id' => $paymentData['appointment_id'],
+    'phone' => $paymentData['phone'],
+    'cashback' => $paymentData['cashback'],
+]);
+
+try {
+
+    $cashbackText = number_format(
+        (float) $paymentData['cashback']
+    );
+
+    $message =
+        "از پرداخت شما سپاسگزاریم.\n" .
+        "مبلغ {$cashbackText} تومان به اعتبار کیف پول شما اضافه شد.";
+
+    Log::info('PAYMENT SMS: sending', [
+        'phone' => $paymentData['phone'],
+        'cashback' => $paymentData['cashback'],
+    ]);
+
+    $smsService = app(SMSService::class);
+
+    $smsService->send(
+        $paymentData['phone'],
+        $message
+    );
+
+    Log::info('PAYMENT SMS: sent successfully');
+
+} catch (\Throwable $e) {
+
+    Log::error('Payment cashback SMS failed', [
+        'appointment_id' => $paymentData['appointment_id'],
+        'phone' => $paymentData['phone'],
+        'cashback' => $paymentData['cashback'],
+        'error' => $e->getMessage(),
+    ]);
+}
+
+        return $this->appointmentResponse(
+            $paymentData['appointment_id'],
+            'عملیات با موفقیت انجام شد'
+        );
     }
 
     private function customerRoleId(): int
@@ -521,7 +670,10 @@ class AppointmentController extends Controller
         )->first();
 
         if (!$role) {
-            abort(404, 'نقش customer پیدا نشد');
+            abort(
+                404,
+                'نقش customer پیدا نشد'
+            );
         }
 
         return $role->id;

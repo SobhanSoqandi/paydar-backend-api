@@ -26,15 +26,24 @@ class Appointment extends Model
         'DeletedAt',
     ];
 
+    // protected $casts = [
+    //     'start_time' => 'datetime',
+    //     'is_paid' => 'boolean',
+    //     'paid_price' => 'decimal:2',
+    //     'IsDeleted' => 'boolean',
+    //     'DeletedAt' => 'datetime',
+    //     'CreatedAt' => 'datetime',
+    //     'UpdatedAt' => 'datetime',
+    // ];
+
     protected $casts = [
-        'start_time' => 'datetime',
-        'is_paid' => 'boolean',
-        'paid_price' => 'decimal:2',
-        'IsDeleted' => 'boolean',
-        'DeletedAt' => 'datetime',
-        'CreatedAt' => 'datetime',
-        'UpdatedAt' => 'datetime',
-    ];
+    'is_paid' => 'boolean',
+    'paid_price' => 'decimal:2',
+    'IsDeleted' => 'boolean',
+    'DeletedAt' => 'datetime',
+    'CreatedAt' => 'datetime',
+    'UpdatedAt' => 'datetime',
+];
 
     protected static function booted(): void
     {
