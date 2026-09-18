@@ -15,8 +15,8 @@ class WalletTransactionController extends Controller
         $validated = $request->validate([
             'wallet_id' => 'required|integer|exists:wallets,id',
             'appointment_id' => 'nullable|integer|exists:appointments,id',
-            'amount' => 'required|numeric',
-            'type' => 'required',
+            'amount' => 'required|numeric|min:0',
+            'type' => 'required|string|in:spend,paid,cashback',
             'description' => 'nullable|string|max:255',
         ]);
 
@@ -24,7 +24,7 @@ class WalletTransactionController extends Controller
 
         return response()->json([
             'data' => $transaction,
-            'message' => 'با موفقیت ایجاد شد',
+            'message' => 'تراکنش با موفقیت ایجاد شد',
         ], 201);
     }
 
@@ -44,7 +44,10 @@ class WalletTransactionController extends Controller
                 ], 404);
             }
 
-            $wallet = Wallet::where('customer_id', $customer->id)->first();
+            $wallet = Wallet::where(
+                'customer_id',
+                $customer->id
+            )->first();
 
             if (!$wallet) {
                 return response()->json([
@@ -56,14 +59,17 @@ class WalletTransactionController extends Controller
             $transactions = WalletTransaction::where(
                 'wallet_id',
                 $wallet->id
-            )->get();
+            )
+                ->orderByDesc('created_at')
+                ->get();
 
             return response()->json([
                 'data' => $transactions,
-                'message' => 'با موفقیت دریافت شد',
+                'message' => 'تراکنش‌ها با موفقیت دریافت شد',
             ]);
 
         } catch (\Throwable $e) {
+
             return response()->json([
                 'data' => null,
                 'message' => 'خطای داخلی سرور',

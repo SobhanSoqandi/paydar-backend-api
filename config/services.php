@@ -29,8 +29,10 @@ return [
     ],
 
     'faraz_sms' => [
-        'api_key' => env('FARAZ_SMS_API_KEY'),
-    ],
+    'api_key' => env('FARAZ_SMS_API_KEY'),
+    'line_number' => env('FARAZ_SMS_LINE_NUMBER'),
+    'password_pattern' => env('FARAZ_SMS_PASSWORD_PATTERN'),
+],
 
     'slack' => [
         'notifications' => [

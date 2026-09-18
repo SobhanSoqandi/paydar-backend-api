@@ -47,10 +47,8 @@ class AppointmentController extends Controller
 
             if (!$user) {
 
-                /*
-                 * ساخت رمز تصادفی برای مشتری جدید
-                 */
-                $password = bin2hex(random_bytes(5));
+
+               $password = (string) random_int(10000, 99999);
 
                 $customerUser = User::create([
                     'phone' => $data['phone_number'],
@@ -79,15 +77,11 @@ class AppointmentController extends Controller
                     'end_date' => now()->addDays(30),
                 ]);
 
-                /*
-                 * SMS بعد از Commit شدن تراکنش ارسال می‌شود.
-                 * بنابراین اگر SMS خراب شود، ساخت مشتری rollback نمی‌شود.
-                 */
+               
                 $newCustomerSms = [
                     'phone' => $data['phone_number'],
                     'password' => $password,
                 ];
-
             } else {
 
                 $customer = Customer::where(
@@ -147,13 +141,15 @@ class AppointmentController extends Controller
          * این بخش خارج از transaction است تا
          * خطای SMS باعث rollback دیتابیس نشود.
          */
+
         if ($newCustomerSms) {
-
             try {
-
-                $message =
-                    "رمز عبور شما: " .
-                    $newCustomerSms['password'];
+                // $message = "رمز عبور شما: " . $newCustomerSms['password'];
+                 $message = "تبریک! شما وارد باشگاه مشتریان پایدار شدید.\n\n"
+            . "رمز عبور شما: " . $newCustomerSms['password'] . "\n\n"
+            . "لطفاً این رمز را در اختیار دیگران قرار ندهید.\n\n"
+            . "از طریق لینک زیر می‌توانید وارد حساب کاربری خود شوید:\n"
+            . "https://paydarsys.ir/login";
 
                 $smsService = app(SMSService::class);
 
@@ -161,15 +157,14 @@ class AppointmentController extends Controller
                     $newCustomerSms['phone'],
                     $message
                 );
-
             } catch (\Throwable $e) {
-
                 Log::error('New customer password SMS failed', [
                     'phone' => $newCustomerSms['phone'],
                     'error' => $e->getMessage(),
                 ]);
             }
         }
+
 
         return $this->appointmentResponse(
             $appointmentData['appointment_id'],
@@ -231,7 +226,6 @@ class AppointmentController extends Controller
             ])
                 ->where('customer_id', $customer->id)
                 ->get();
-
         } elseif ($role === 'owner') {
 
             $owner = Owner::where(
@@ -268,7 +262,6 @@ class AppointmentController extends Controller
             ])
                 ->where('salon_id', $salon->id)
                 ->get();
-
         } else {
 
             return response()->json([
@@ -309,7 +302,7 @@ class AppointmentController extends Controller
         if ($request->filled('service_id')) {
             $query->whereHas(
                 'services',
-                fn ($q) => $q->where(
+                fn($q) => $q->where(
                     'services.id',
                     $request->service_id
                 )
@@ -319,7 +312,7 @@ class AppointmentController extends Controller
         if ($request->filled('phone')) {
             $query->whereHas(
                 'customer.user',
-                fn ($q) => $q->where(
+                fn($q) => $q->where(
                     'phone',
                     $request->phone
                 )
@@ -467,7 +460,7 @@ class AppointmentController extends Controller
         $appointment->update(
             array_filter(
                 $data,
-                fn ($value) => $value !== null
+                fn($value) => $value !== null
             )
         );
 
@@ -499,168 +492,268 @@ class AppointmentController extends Controller
         ]);
     }
 
-    public function pay(Request $request)
-    {
-
-      Log::info('PAY METHOD REACHED', [
+   public function pay(Request $request)
+{
+    Log::info('PAY METHOD REACHED', [
         'data' => $request->all(),
     ]);
 
-        $data = $request->validate([
-            'pay_price' => ['required', 'numeric'],
-            'appointment_id' => [
-                'required',
-                'integer',
-                'exists:appointments,id',
-            ],
-            'customer_id' => [
-                'required',
-                'integer',
-                'exists:customers,id',
-            ],
-        ]);
+    $data = $request->validate([
+        'price' => ['required', 'numeric', 'min:1'],
 
-        $paymentData = DB::transaction(function () use ($data) {
+        'wallet_amount' => [
+            'nullable',
+            'numeric',
+            'min:0',
+        ],
 
-            $appointment = Appointment::find(
-                $data['appointment_id']
-            );
+        'appointment_id' => [
+            'required',
+            'integer',
+            'exists:appointments,id',
+        ],
 
-            if (!$appointment) {
-                return [
-                    'error' => response()->json([
-                        'data' => null,
-                        'message' => 'Appointment not found',
-                    ], 404),
-                ];
-            }
+        'customer_id' => [
+            'required',
+            'integer',
+            'exists:customers,id',
+        ],
+    ]);
 
-            $salon = Salon::find(
-                $appointment->salon_id
-            );
+    $paymentData = DB::transaction(function () use ($data) {
 
-            if (!$salon) {
-                return [
-                    'error' => response()->json([
-                        'data' => null,
-                        'message' => 'سالن پیدا نشد',
-                    ], 404),
-                ];
-            }
+        $appointment = Appointment::find(
+            $data['appointment_id']
+        );
 
-            $wallet = Wallet::where(
-                'customer_id',
-                $data['customer_id']
-            )->first();
+        if (!$appointment) {
+            return [
+                'error' => response()->json([
+                    'data' => null,
+                    'message' => 'Appointment not found',
+                ], 404),
+            ];
+        }
 
-            if (!$wallet) {
-                return [
-                    'error' => response()->json([
-                        'data' => null,
-                        'message' => 'کیف پول یافت نشد',
-                    ], 400),
-                ];
-            }
+        if ($appointment->is_paid) {
+            return [
+                'error' => response()->json([
+                    'data' => null,
+                    'message' => 'این نوبت قبلاً پرداخت شده است',
+                ], 400),
+            ];
+        }
 
-            $customer = Customer::with('user')
-                ->find($data['customer_id']);
+        $salon = Salon::find(
+            $appointment->salon_id
+        );
 
-            if (!$customer || !$customer->user) {
-                return [
-                    'error' => response()->json([
-                        'data' => null,
-                        'message' => 'اطلاعات مشتری یافت نشد',
-                    ], 404),
-                ];
-            }
+        if (!$salon) {
+            return [
+                'error' => response()->json([
+                    'data' => null,
+                    'message' => 'سالن پیدا نشد',
+                ], 404),
+            ];
+        }
 
-            $appointment->paid_price =
-                $data['pay_price'];
+        $wallet = Wallet::where(
+            'customer_id',
+            $data['customer_id']
+        )
+            ->lockForUpdate()
+            ->first();
 
-            $appointment->is_paid = true;
+        if (!$wallet) {
+            return [
+                'error' => response()->json([
+                    'data' => null,
+                    'message' => 'کیف پول یافت نشد',
+                ], 400),
+            ];
+        }
 
-            $appointment->save();
+        $customer = Customer::with('user')
+            ->find($data['customer_id']);
 
-            $cashback = (
-                (float) $data['pay_price']
-                * (float) $salon->back_percent
-            ) / 100;
+        if (!$customer || !$customer->user) {
+            return [
+                'error' => response()->json([
+                    'data' => null,
+                    'message' => 'اطلاعات مشتری یافت نشد',
+                ], 404),
+            ];
+        }
 
-            $wallet->balance =
-                (float) $wallet->balance + $cashback;
+        /*
+         * مبلغ اصلی نوبت
+         */
+        $price = (float) $data['price'];
 
-            $wallet->save();
+        /*
+         * مبلغی که کاربر درخواست کرده از کیف پول پرداخت شود
+         */
+        $requestedWalletAmount = (float) (
+            $data['wallet_amount'] ?? 0
+        );
+
+        /*
+         * بیشتر از موجودی کیف پول نمی‌توان برداشت کرد.
+         */
+        $walletDeduction = min(
+            $requestedWalletAmount,
+            (float) $wallet->balance,
+            $price
+        );
+
+        /*
+         * مبلغی که واقعاً از خارج کیف پول پرداخت می‌شود.
+         */
+        $paidAmount = $price - $walletDeduction;
+
+        /*
+         * Cashback بر اساس مبلغ اصلی نوبت محاسبه می‌شود.
+         */
+        $cashback = (
+            $price
+            * (float) $salon->back_percent
+        ) / 100;
+
+        /*
+         * موجودی جدید کیف پول
+         */
+        $newWalletBalance =
+            (float) $wallet->balance
+            - $walletDeduction
+            + $cashback;
+
+        /*
+         * مبلغ ثبت‌شده برای نوبت
+         *
+         * paid_price همان مبلغ واقعی پرداخت‌شده
+         * بعد از کسر مبلغ کیف پول است.
+         */
+        $appointment->paid_price = $paidAmount;
+
+        $appointment->is_paid = true;
+
+        $appointment->save();
+
+        /*
+         * 1️⃣ کسر از کیف پول
+         */
+        if ($walletDeduction > 0) {
+
+            WalletTransaction::create([
+                'wallet_id' => $wallet->id,
+                'appointment_id' => $appointment->id,
+                'amount' => $walletDeduction,
+                'type' => 'spend',
+                'description' =>
+                    "کسر وجه از کیف پول بابت نوبت #{$appointment->id}",
+            ]);
+        }
+
+        /*
+         * 2️⃣ مبلغ پرداخت‌شده
+         */
+        if ($paidAmount > 0) {
+
+            WalletTransaction::create([
+                'wallet_id' => $wallet->id,
+                'appointment_id' => $appointment->id,
+                'amount' => $paidAmount,
+                'type' => 'paid',
+                'description' =>
+                    "پرداخت بابت نوبت #{$appointment->id}",
+            ]);
+        }
+
+        /*
+         * 3️⃣ بازگشت وجه
+         */
+        if ($cashback > 0) {
 
             WalletTransaction::create([
                 'wallet_id' => $wallet->id,
                 'appointment_id' => $appointment->id,
                 'amount' => $cashback,
-                'type' => 'CASHBACK',
+                'type' => 'cashback',
+                'description' =>
+                    "بازگشت وجه بابت نوبت #{$appointment->id}",
             ]);
-
-            return [
-                'appointment_id' => $appointment->id,
-                'cashback' => $cashback,
-                'phone' => $customer->user->phone,
-            ];
-        });
-
-        if (isset($paymentData['error'])) {
-            return $paymentData['error'];
         }
 
         /*
-         * ارسال SMS بعد از موفقیت کامل تراکنش پرداخت
-         *
-         * اگر SMS شکست بخورد:
-         * پرداخت و cashback همچنان موفق باقی می‌مانند.
+         * به‌روزرسانی موجودی کیف پول
          */
-        
-        Log::info('PAYMENT SMS: reached SMS section', [
-    'appointment_id' => $paymentData['appointment_id'],
-    'phone' => $paymentData['phone'],
-    'cashback' => $paymentData['cashback'],
-]);
+        $wallet->balance = $newWalletBalance;
 
-try {
+        $wallet->save();
 
-    $cashbackText = number_format(
-        (float) $paymentData['cashback']
-    );
+        return [
+            'appointment_id' => $appointment->id,
+            'price' => $price,
+            'wallet_deduction' => $walletDeduction,
+            'paid_amount' => $paidAmount,
+            'cashback' => $cashback,
+            'wallet_balance' => $newWalletBalance,
+            'phone' => $customer->user->phone,
+        ];
+    });
 
-    $message =
-        "از پرداخت شما سپاسگزاریم.\n" .
-        "مبلغ {$cashbackText} تومان به اعتبار کیف پول شما اضافه شد.";
+    if (isset($paymentData['error'])) {
+        return $paymentData['error'];
+    }
 
-    Log::info('PAYMENT SMS: sending', [
-        'phone' => $paymentData['phone'],
-        'cashback' => $paymentData['cashback'],
-    ]);
-
-    $smsService = app(SMSService::class);
-
-    $smsService->send(
-        $paymentData['phone'],
-        $message
-    );
-
-    Log::info('PAYMENT SMS: sent successfully');
-
-} catch (\Throwable $e) {
-
-    Log::error('Payment cashback SMS failed', [
+    /*
+     * ارسال SMS بعد از موفقیت کامل تراکنش
+     */
+    Log::info('PAYMENT SMS: reached SMS section', [
         'appointment_id' => $paymentData['appointment_id'],
         'phone' => $paymentData['phone'],
         'cashback' => $paymentData['cashback'],
-        'error' => $e->getMessage(),
     ]);
-}
 
-        return $this->appointmentResponse(
-            $paymentData['appointment_id'],
-            'عملیات با موفقیت انجام شد'
+    try {
+
+        $cashbackText = number_format(
+            (float) $paymentData['cashback']
         );
+
+        $message =
+            "از پرداخت شما سپاسگزاریم.\n" .
+            "مبلغ {$cashbackText} تومان به اعتبار کیف پول شما اضافه شد.";
+
+        Log::info('PAYMENT SMS: sending', [
+            'phone' => $paymentData['phone'],
+            'cashback' => $paymentData['cashback'],
+        ]);
+
+        $smsService = app(SMSService::class);
+
+        $smsService->send(
+            $paymentData['phone'],
+            $message
+        );
+
+        Log::info('PAYMENT SMS: sent successfully');
+
+    } catch (\Throwable $e) {
+
+        Log::error('Payment cashback SMS failed', [
+            'appointment_id' => $paymentData['appointment_id'],
+            'phone' => $paymentData['phone'],
+            'cashback' => $paymentData['cashback'],
+            'error' => $e->getMessage(),
+        ]);
     }
+
+    return $this->appointmentResponse(
+        $paymentData['appointment_id'],
+        'عملیات با موفقیت انجام شد'
+    );
+}
 
     private function customerRoleId(): int
     {

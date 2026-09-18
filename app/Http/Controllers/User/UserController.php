@@ -171,6 +171,11 @@ class UserController extends Controller
                 'max:100',
                 Rule::unique('users', 'email')->ignore($user->id),
             ],
+               'user_name' => [
+                'nullable',
+                
+                'max:30',
+            ],
             'role_id' => ['nullable', 'integer', 'exists:roles,id'],
             'is_active' => ['nullable', 'boolean'],
         ]);
